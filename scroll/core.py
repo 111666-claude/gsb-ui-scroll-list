@@ -1,8 +1,4 @@
-"""列表虚拟化：可见区间、滚动钳制、行复用池与数据变更。
-
-缺陷：可见区间多算一行、滚动偏移不钳制、每次渲染都新建行不复用、
-换数据不清旧行、可见区间计算扫描全部条目。
-"""
+"""列表虚拟化：可见区间、滚动钳制、行复用池与数据变更。"""
 
 
 class ListView:
@@ -15,7 +11,7 @@ class ListView:
         self.items = []
         self.offset = 0
         self.rows = {}
-        self.live = []
+        self.free = []
         self.active = 0
         self.reuses = 0
         self.scanned = 0
@@ -23,33 +19,52 @@ class ListView:
     def set_items(self, items):
         self.items = list(items)
         self.rows = {}
-        self.live = []
+        self.free = []
         self.active = 0
+        self.offset = self._clamp(self.offset)
 
     def max_offset(self):
         total = len(self.items) * self.row_height
         return max(0, total - self.viewport_height)
 
+    def _clamp(self, offset):
+        return min(max(offset, 0), self.max_offset())
+
     def scroll_to(self, offset):
-        self.offset = offset
+        self.offset = self._clamp(offset)
+
+    def _window(self):
+        first = self.offset // self.row_height
+        count = -(-self.viewport_height // self.row_height)
+        start = max(first, 0)
+        end = min(first + count, len(self.items))
+        return start, end
 
     def visible(self):
         """当前可见的 (下标, 条目) 列表。"""
-        self.scanned += len(self.items)
-        first = self.offset // self.row_height
-        count = self.viewport_height // self.row_height + 1
-        out = []
-        for index in range(first, first + count):
-            if 0 <= index < len(self.items):
-                out.append((index, self.items[index]))
-        return out
+        self.scanned += 1
+        start, end = self._window()
+        return [(index, self.items[index]) for index in range(start, end)]
 
     def render(self):
         """渲染一帧，返回可见条目。"""
         rows = self.visible()
+        wanted = set(index for index, _ in rows)
+        for index in list(self.rows):
+            if index not in wanted:
+                self.free.append(self.rows.pop(index))
         for index, _ in rows:
-            if index not in self.rows:
-                self.rows[index] = {"index": index}
+            if index in self.rows:
+                continue
+            if self.free:
+                row = self.free.pop()
+                row["index"] = index
+                self.reuses += 1
+            elif len(self.rows) + len(self.free) < self.pool_size:
+                row = {"index": index}
+            else:
+                continue
+            self.rows[index] = row
         self.active = len(self.rows)
         return rows
 
